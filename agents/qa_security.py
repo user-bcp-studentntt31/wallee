@@ -50,7 +50,8 @@ a la raíz de la app y siguen el contrato de la app (su AGENTS.md).
 - UI y E2E (alta -> pago -> duplicado -> falla): solo si el mapa trae un MCP o una herramienta de navegador; si no,
   proponlos como «NO EJECUTADO». La app levantada se ejercita por la URL del mapa.
 - Comando de pruebas y cobertura: los del mapa (`python tools/wallee.py test [backend|frontend]`, meta
-  `coverage_threshold_percent`). Los ejecuta la persona en la rama de QA; tú nunca escribes su salida.
+  `coverage_threshold_percent`). `main.py` copia primero los tests y pregunta explícitamente si debe ejecutarlos.
+  Solo después de un «sí» ejecuta el comando configurado y te entrega la salida real para el informe final.
 - Dependencias: `npm audit` en la app. Código: eslint-plugin-security. Secretos: gitleaks o búsqueda por patrones
   (propuestos, los ejecuta la persona).
 - Crew (wallee): `python -m unittest discover -s tests` para guardrails, HITL y bloqueos (SEC-07, SEC-08).
@@ -201,9 +202,14 @@ Revisa además autenticación, autorización, entradas, secretos, datos sensible
 confianza de la petición, y la integridad y migración si el spec incluye Datos y persistencia.
 
 # Reglas obligatorias
-- NO puedes ejecutar comandos ni pruebas. Todo caso y comando que propongas es «NO EJECUTADO» hasta que la persona
-  lo ejecute y conserve la salida real; tú nunca escribes una salida, un conteo de tests ni un «pasó» como si
-  fuera real. Distingue siempre lo ejecutado (con salida aportada por la persona) de lo propuesto.
+- No ejecutes comandos por tu cuenta. `main.py` solo ejecuta la suite de pruebas configurada después de pedir
+  confirmación; si aceptan, la salida real se incluye en una segunda tarea para actualizar el informe. Antes de esa
+  confirmación, todo caso queda «NO EJECUTADO». Nunca inventes una salida, conteo ni resultado.
+- La primera salida es un borrador de casos, pruebas y revisión; marca todas las pruebas «NO EJECUTADO».
+  El informe final de ejecución solo se genera en la segunda tarea, después de que la persona confirme y `main.py`
+  entregue el resultado real.
+- En el informe posterior a la ejecución, marca cada caso como ejecutado solo si la salida recibida lo demuestra.
+  Una suite fallida no significa que todos los casos fallaron ni que los AC pasaron.
 - NUNCA inventes resultados. Lo que no fue ejecutado se escribe «NO EJECUTADO».
 - NUNCA incluyas secretos ni datos reales.
 - No implementas lógica de negocio ni corriges bugs ajenos: los reportas con un caso que los reproduce.
@@ -250,17 +256,18 @@ confianza de la petición, y la integridad y migración si el spec incluye Datos
 - Cada documento de QA va en su propio bloque ```markdown cuya PRIMERA línea es `<!-- test/<archivo>.md -->`
   (plan de pruebas, evidencia y decisiones) o `<!-- security/security-review.md -->` (revisión de seguridad).
   Los hallazgos y el resto del informe van como Markdown normal, sin bloque.
-- El pipeline guarda esos bloques en `output/` y los copia a la rama de QA del repositorio de la app; la persona
-  los revisa y los ejecuta allí. Nunca digas que quedaron «subidos» ni «ejecutados». Comandos y salidas reales van
-  en línea o en tablas, nunca simulados.
+- El pipeline guarda esos bloques en `output/` y los copia al repositorio de QA de la app. Tras copiar los tests,
+  `main.py` pide confirmación; solo si la persona acepta ejecuta el comando permitido y genera el informe final
+  con esa salida. Si rechaza, conserva «NO EJECUTADO». Nunca inventes resultados ni afirmes que se subieron si
+  la publicación no lo confirma.
 
 # Entregables (todos en español, con tablas)
 1. Plan de pruebas (`test/test-plan.md`): ID, AC/RN, técnica (EP/BVA/DT/ST/EG), precondiciones, entrada,
    resultado esperado, prioridad, estado (EJECUTADO-OK / EJECUTADO-FALLÓ solo con salida aportada por la
    persona; si no, NO EJECUTADO), y la matriz de trazabilidad AC/RN <-> caso.
 2. Pruebas automatizadas en las carpetas de la app que indica el mapa, con el ID del caso en el nombre.
-3. Evidencia (`test/evidence.md`): por AC -> HU, AC, test ID, comando exacto a ejecutar
-   (`python tools/wallee.py test`), resultado (NO EJECUTADO hasta que la persona pegue la salida real), commit y PR.
+3. Evidencia (`test/evidence.md`): por AC -> HU, AC, test ID, comando exacto (`python tools/wallee.py test`),
+   resultado (NO EJECUTADO hasta recibir la salida del ejecutor de `main.py`), commit y PR.
 4. Revisión de seguridad (`security/security-review.md`): hallazgos SEC-01..SEC-09 con ubicación, impacto, corrección y verificación; lo pendiente declarado.
 5. Hallazgos con este formato:
    ID: BUG-xx | HU/AC: W4-AC2 | Severidad: Alta/Media/Baja | Dueño: <rol>
@@ -270,8 +277,8 @@ confianza de la petición, y la integridad y migración si el spec incluye Datos
    verde/rojo y a quién se reporta (informe de checkpoint), checklist previo al Freeze (README y cobertura
    de las HU del alcance honestos, diagrama e instrucciones que funcionan, código en GitHub, tests, evidencia y trade-offs), y aporte a README sección 6 "Evidencia y pruebas" y sección 7 "Trade-offs"
    (qué no se probó y deuda conocida).
-Definición de «listo» (para las HU del alcance): cada AC tiene al menos un test propuesto con su comando y, tras la ejecución
-de la persona, evidencia real; hay un happy path y un caso borde por HU, guardrails y HITL del Crew están
+Definición de «listo» (para las HU del alcance): cada AC tiene al menos un test propuesto con su comando y, tras
+la ejecución autorizada por la persona desde `main.py`, evidencia real; hay un happy path y un caso borde por HU, guardrails y HITL del Crew están
 cubiertos si el alcance los incluye, y `python tools/wallee.py test` corre en un clon limpio de la rama de QA de la app
 con la cobertura del mapa. Lo no probado se declara como pendiente.
 
@@ -627,3 +634,34 @@ def build_task(feature: dict) -> Task:
                                  "DECISIÓN REQUERIDA; (6) estado por HU (COMPLETA/PARCIAL/NO HECHA), "
                                  "discrepancias entre el spec y el discovery, y trade-offs."),
                 agent=agent)
+
+
+def build_execution_report_task(feature: dict, previous_report: str, execution_result: str) -> Task:
+    """Build the report-only task that consumes the confirmed test-run output."""
+    return Task(
+        description=(
+            INSTRUCTIONS
+            + "\nFeature: " + str(feature.get("title", ""))
+            + "\n" + str(feature.get("description", ""))
+            + "\n" + str(feature.get("acceptance_criteria", []))
+            + build_context(feature)
+            + "\n\n---\n## BORRADOR QA GENERADO ANTES DE EJECUTAR\n"
+            + (previous_report or "(no se recibió borrador previo)")
+            + "\n\n---\n## RESULTADO REAL DEL EJECUTOR DE main.py\n"
+            + execution_result
+            + "\n\n## Instrucciones de esta tarea posterior\n"
+            + "- Genera el informe final actualizado con los resultados reales recibidos.\n"
+            + "- No vuelvas a generar ni modificar archivos de prueba; ya fueron ejecutados.\n"
+            + "- No asumas que todos los casos pasaron o fallaron a partir del estado global: "
+              "cita solo lo que la salida demuestra y conserva los casos no identificables como NO EJECUTADO.\n"
+            + "- La salida del ejecutor ya está registrada en `test/evidence.md`; resume esos hechos en el informe "
+              "y no alteres la evidencia ni inventes detalle faltante.\n"
+            + "- No afirmes que el commit, push o PR ocurrieron; esa publicación es un paso separado.\n"
+            + "- Devuelve solo el informe final en Markdown, sin bloques de código ni archivos nuevos."
+        ),
+        expected_output=(
+            "Informe final QA & Security en Markdown actualizado con el resultado real de ejecución, "
+            "evidencia y casos cuyo resultado pueda verificarse; sin regenerar tests."
+        ),
+        agent=agent,
+    )

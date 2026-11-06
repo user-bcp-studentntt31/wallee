@@ -13,6 +13,7 @@ import main as app
 from crew import roles as roles_mod
 from crew.code_paths import resolve_destination
 from crew.openspec_changes import Change, change_context, list_changes, role_tasks, select_change
+from crew.qa_execution import TestRunResult
 
 FEATURE = {"title": "Transfer funds", "description": "Move money", "acceptance_criteria": ["Reject empty"]}
 TASKS = (
@@ -167,17 +168,25 @@ class SingleRoleRunTests(unittest.TestCase):
             stack.enter_context(patch.object(app, "list_project_items", return_value=[{"title": "x"}]))
             stack.enter_context(patch.object(app, "get_feature_from_item", return_value=FEATURE))
             stack.enter_context(patch.object(app, "run_step", side_effect=run))
-            stack.enter_context(patch.object(app, "hitl_approve", return_value=("s", "")))
+            approval_mock = stack.enter_context(patch.object(app, "hitl_approve", return_value=("s", "")))
+            execution_prompt = stack.enter_context(
+                patch.object(app, "confirm_qa_test_execution", return_value=False)
+            )
+            test_runner = stack.enter_context(patch.object(app, "run_qa_tests"))
             publish_mock = stack.enter_context(patch.object(app, "publish_output"))
             stack.enter_context(patch.object(app, "start_item"))
-            stack.enter_context(patch.object(app, "finish_item"))
+            finish_mock = stack.enter_context(patch.object(app, "finish_item"))
             stack.enter_context(patch.object(app, "STATE_FILE", output / ".state.json"))
             stack.enter_context(patch("builtins.input", return_value="1"))
             stack.enter_context(contextlib.redirect_stdout(io.StringIO()))
             app.main()
 
             self.assertEqual(len(prompts), 1)
+            approval_mock.assert_not_called()
+            execution_prompt.assert_called_once()
+            test_runner.assert_not_called()
             publish_mock.assert_called_once()
+            finish_mock.assert_not_called()
             published_target, published_files, _, labels, change_name, approved = publish_mock.call_args.args
             self.assertEqual((published_target, labels, change_name, approved),
                              (target, ["QA & Security"], "w1-demo", ["QA & Security"]))
@@ -192,6 +201,66 @@ class SingleRoleRunTests(unittest.TestCase):
             self.assertEqual(checkpoint["openspec_change"], "w1-demo")
             self.assertEqual(list(checkpoint["steps"]), ["qa_security"])
             self.assertNotIn("workflow_mode", checkpoint)
+
+    def test_qa_yes_runs_the_copied_tests_then_generates_final_report(self):
+        qa = next(r for r in roles_mod.discover_roles() if r.KEY == "qa_security")
+        generated = ("Informe preliminar. NO EJECUTADO.\n```typescript\n// test/transfer.e2e-spec.ts\n"
+                     "describe('transfer', () => {});\n```")
+        final_report = "Informe final: la suite FALLÓ con salida real."
+
+        def run(agent, task):
+            if "RESULTADO REAL DEL EJECUTOR" in task.description:
+                self.assertIn("Estado: FALLÓ", task.description)
+                return final_report
+            return generated
+
+        with tempfile.TemporaryDirectory() as tmp, contextlib.ExitStack() as stack:
+            output, target = Path(tmp) / "output", Path(tmp) / "target"
+            output.mkdir()
+            target.mkdir()
+            repo = Path(tmp) / "repo"
+            change_dir = repo / "openspec" / "changes" / "w1-demo"
+            change_dir.mkdir(parents=True)
+            (change_dir / "tasks.md").write_text(TASKS, encoding="utf-8")
+            change = Change("w1-demo", change_dir, 1, 3)
+
+            stack.enter_context(patch.dict("os.environ", {"CREWAI_INCLUDE_DATA": "false"}))
+            stack.enter_context(patch.object(app, "OUTPUT_DIR", output))
+            stack.enter_context(patch.object(app, "CHECKPOINT_FILE", output / ".checkpoint.json"))
+            stack.enter_context(patch.object(app, "choose_roles", return_value=((qa,), False)))
+            stack.enter_context(patch.object(app, "select_change", return_value=change))
+            stack.enter_context(patch.object(app, "select_target_repo", return_value=target))
+            stack.enter_context(patch.object(app, "proj_tools", return_value=[]))
+            stack.enter_context(patch.object(app, "list_projects", return_value=[{"id": "P", "title": "T"}]))
+            stack.enter_context(patch.object(app, "list_project_items", return_value=[{"title": "x"}]))
+            stack.enter_context(patch.object(app, "get_feature_from_item", return_value=FEATURE))
+            stack.enter_context(patch.object(app, "run_step", side_effect=run))
+            approval_mock = stack.enter_context(patch.object(app, "hitl_approve"))
+            stack.enter_context(patch.object(app, "confirm_qa_test_execution", return_value=True))
+
+            def execute_tests(test_target, command):
+                self.assertTrue((test_target / "test" / "transfer.e2e-spec.ts").is_file())
+                return TestRunResult(command, command, "failed", 1, 0.1, "1 failed", "")
+
+            test_runner = stack.enter_context(patch.object(app, "run_qa_tests", side_effect=execute_tests))
+            publish_mock = stack.enter_context(patch.object(app, "publish_output"))
+            stack.enter_context(patch.object(app, "start_item"))
+            finish_mock = stack.enter_context(patch.object(app, "finish_item"))
+            stack.enter_context(patch.object(app, "STATE_FILE", output / ".state.json"))
+            stack.enter_context(patch("builtins.input", return_value="1"))
+            stack.enter_context(contextlib.redirect_stdout(io.StringIO()))
+
+            app.main()
+
+            approval_mock.assert_not_called()
+            test_runner.assert_called_once_with(target, "python tools/wallee.py test")
+            self.assertEqual((output / "specs" / "qa_security_report.md").read_text(encoding="utf-8"),
+                             final_report)
+            self.assertIn("**FALLÓ**", (target / "test" / "evidence.md").read_text(encoding="utf-8"))
+            self.assertEqual((target / "specs" / "qa_security_report.md").read_text(encoding="utf-8"),
+                             final_report)
+            self.assertTrue(publish_mock.call_args.args[1])
+            finish_mock.assert_not_called()
 
 
 if __name__ == "__main__":

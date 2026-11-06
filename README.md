@@ -67,6 +67,7 @@ se actualiza solo en `crew/lifecycle.py`:
 
 - al empezar a trabajar un item en **Todo** → pasa a **In Progress**;
 - al terminar el flujo (todos los pasos aprobados, tras el push/PR) pregunta «¿Marcar … como Done?» (`Enter` sí · `n` no).
+  Si se seleccionó QA, solo lo ofrece cuando la suite se ejecutó y pasó; si no se ejecutó o falló, el item permanece **In Progress**.
 
 Escribe con `manage_project.set_field_value` del MCP y, si falla, con la API GraphQL de GitHub vía `gh`. Necesita permiso de
 escritura en el Project; si no lo hay, se muestra el motivo y el item se puede cambiar a mano. `WALLEE_PROJECT_SYNC=false`
@@ -160,7 +161,7 @@ Los artefactos se guardan en `output/`:
 - `specs/product_owner_report.md`: alcance y criterios de aceptación.
 - `specs/architect_report.md`: solución, módulos y contrato de API.
 - `specs/ai_engineer_1_report.md` y `specs/ai_engineer_2_report.md`: implementaciones de backend y de frontend/agente.
-- `specs/qa_security_report.md`: casos, tests, comandos y hallazgos de seguridad. Los resultados quedan pendientes de ejecución humana.
+- `specs/qa_security_report.md`: casos, tests, comandos y hallazgos de seguridad. Al seleccionar QA, los tests se generan automáticamente; después `main.py` pide confirmación antes de ejecutarlos y producir el informe final con resultados reales. Si se rechaza, permanecen como `NO EJECUTADO`.
 - `specs/presenter_report.md`: evidencia y guion del pitch.
 - `backend-nestjs/` y `frontend-react/`: código extraído y configuración de arranque.
 - `.checkpoint.json`: estado local de la ejecución.

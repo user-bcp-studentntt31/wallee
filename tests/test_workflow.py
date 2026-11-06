@@ -103,6 +103,8 @@ class WorkflowTests(unittest.TestCase):
             stack.enter_context(patch.object(app, "hitl_approve", side_effect=approve))
             stack.enter_context(patch.object(app, "choose_roles", return_value=(roles if with_data else ROLES, True)))
             stack.enter_context(patch.object(app, "select_change", return_value=None))
+            stack.enter_context(patch.object(app, "confirm_qa_test_execution", return_value=False))
+            stack.enter_context(patch.object(app, "run_qa_tests"))
             stack.enter_context(patch.object(app, "publish_output"))
             stack.enter_context(patch.object(app, "start_item"))
             stack.enter_context(patch.object(app, "finish_item"))

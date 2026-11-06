@@ -6,18 +6,13 @@ Flujo:
      Pregunta qué rol ejecutar (los de agents/ o «Todos») y qué cambio OpenSpec de openspec/changes/ usar.
      Las carpetas de /output de cada rol salen de las líneas «Carpetas de salida en /output:» de su prompt.
   1. Conecta al MCP Projects → lista proyectos → elige proyecto → lista backlog → elige feature
-  2. Por cada agente elegido (Product Owner, Architect, AI Engineer 1, AI Engineer 2, QA & Security, Presenter), corre un mini-Crew de un solo paso.
-  3. Tras cada paso muestra un preview y pide aprobación humana [s / n / r]:
-       s = aprobar y continuar
-       n = rechazar y abortar
-       r = reintentar el mismo paso
-  4. Al aprobar: guarda el artefacto inmediatamente (spec .md / código .ts .tsx .sql)
-     y registra el checkpoint en output/.checkpoint.json.
-  5. Al volver a ejecutar: carga el checkpoint y omite los pasos ya aprobados,
-     inyectando sus outputs como contexto para los pasos restantes.
-  6. Al terminar, copia output/ al repo destino, hace commit y push en una rama y, tras una
-     preaprobación humana (vista previa del PR: [s] crear · [d] borrador · [e] editar título · [n] no crear),
-     abre el Pull Request con `gh`. WALLEE_PUBLISH=false omite este paso.
+  2. Por cada agente elegido, corre un mini-Crew de un solo paso.
+  3. QA genera y guarda sus pruebas automáticamente; después pregunta antes de ejecutarlas.
+     Los demás roles conservan la aprobación [s / n / r].
+  4. Al aprobar, guarda artefactos y registra el checkpoint en output/.checkpoint.json.
+  5. Al volver a ejecutar, carga el checkpoint y omite los pasos ya aprobados.
+  6. Al terminar, copia output/ al repo destino, hace commit y push en una rama y, tras una
+     preaprobación humana, abre el Pull Request con `gh`. WALLEE_PUBLISH=false omite la publicación.
 
 Estructura generada en output/ (según el rol; cada prompt declara sus carpetas):
   .checkpoint.json        ← estado de cada paso
@@ -81,6 +76,7 @@ from crew.publish import publish_output
 from crew.prefetch import Prefetch
 from crew import ui
 from crew.code_paths import FILENAME_PATTERN, feature_slug, guess_filename, resolve_destination
+from crew.qa_execution import append_execution_evidence, run_qa_tests
 
 # ── MCP clients ────────────────────────────────────────────────────
 from mcp_projects import (
@@ -444,6 +440,24 @@ def hitl_approve(step_name: str, output: str) -> tuple[str, str]:
         print("\n  ✗ Opción inválida. Por favor ingresa 's' para sí, 'r' para reintentar o 'n' para rechazar.")
 
 
+def confirm_qa_test_execution(ask=ui.prompt) -> bool:
+    """Ask before running generated QA tests and creating the execution report."""
+    while True:
+        try:
+            answer = ask(
+                "\nLas pruebas QA ya fueron generadas y copiadas. "
+                "¿Procedo a ejecutarlas y generar el informe con los resultados reales? [s/n]: "
+            ).strip().lower()
+        except EOFError:
+            print("No se recibió confirmación; se omite la ejecución de QA.")
+            return False
+        if answer in ("s", "si", "sí", "y", "yes"):
+            return True
+        if answer in ("n", "no"):
+            return False
+        ui.error("Respuesta inválida. Ingresa s o n.")
+
+
 
 # ── Contexto acumulado ─────────────────────────────────────────────
 
@@ -671,7 +685,8 @@ def main():
         folders = output_folders(role)
 
         # Un solo rol ya aprobado: permite repetirlo en vez de omitirlo
-        if not run_all and steps_state.get(step_key, {}).get("status") == "approved":
+        if (not run_all and step_key != "qa_security"
+                and steps_state.get(step_key, {}).get("status") == "approved"):
             ans = input(f"\n{step_label} ya fue aprobado. ¿Volver a ejecutarlo? [s/n]: ").strip().lower()
             if ans == "s":
                 steps_state.pop(step_key)
@@ -697,6 +712,13 @@ def main():
             task_map = build_tasks(feature, with_data, selected_roles)
             task = task_map[step_key]
 
+            if step_key == "qa_security":
+                task.description += (
+                    "\n\nFASE AUTOMÁTICA DE GENERACIÓN: genera los archivos de pruebas y el borrador QA, "
+                    "pero marca todos los resultados NO EJECUTADO. main.py copiará los archivos y pedirá "
+                    "confirmación; no existe informe final hasta que se ejecute la segunda tarea con salida real."
+                )
+
             # Inyectar contexto de pasos anteriores en la descripción
             ctx_note = build_context_note(approved_outputs)
             if ctx_note:
@@ -719,8 +741,12 @@ def main():
             # Ejecutar mini-Crew
             output = run_step(agent, task)
 
-            # HITL
-            decision, user_feedback = hitl_approve(step_label, output)
+            # QA test generation is automatic; execution has its own confirmation after files are copied.
+            if step_key == "qa_security":
+                print("\n✅ Pruebas y documentos QA generados. Se guardarán sin ejecutar todavía.")
+                decision, user_feedback = "s", ""
+            else:
+                decision, user_feedback = hitl_approve(step_label, output)
 
             if decision == "s":
                 # APROBADO
@@ -765,6 +791,34 @@ def main():
     print("=" * 60)
     copied = copy_output(OUTPUT_DIR, target_repo)
     ui.success(f"{len(copied)} archivos copiados de output/ a {target_repo}")
+    qa_role = next((role for role in selected_roles if role.KEY == "qa_security"), None)
+    qa_test_result = None
+    if qa_role:
+        if confirm_qa_test_execution():
+            qa_map_path = Path(__file__).resolve().parent / "agents" / "qa-project-map.json"
+            qa_map = json.loads(qa_map_path.read_text(encoding="utf-8"))
+            test_command = qa_map.get("qa", {}).get("run_tests_command")
+            if not isinstance(test_command, str) or not test_command.strip():
+                raise ValueError(f"Falta qa.run_tests_command en {qa_map_path}")
+
+            qa_test_result = run_qa_tests(target_repo, test_command)
+            append_execution_evidence(OUTPUT_DIR / "test" / "evidence.md", qa_test_result)
+            ui.success(f"Pruebas QA: {qa_test_result.status}")
+            copied = copy_output(OUTPUT_DIR, target_repo)
+            ui.success(f"Evidencia real copiada a {target_repo}")
+
+            previous_qa_report = str(approved_outputs.get(qa_role.KEY, ""))
+            report_task = qa_role.build_execution_report_task(
+                feature, previous_qa_report, qa_test_result.report_text()
+            )
+            final_qa_report = run_step(qa_role.agent, report_task)
+            save_spec(qa_role.SPEC_FILE, final_qa_report, report_folder(qa_role))
+
+            copied = copy_output(OUTPUT_DIR, target_repo)
+            ui.success(f"{len(copied)} archivos QA finales copiados a {target_repo}")
+        else:
+            print("Ejecución omitida. Los casos permanecen NO EJECUTADO y no se genera informe final.")
+
     approved_labels = [step[1] for step in steps if steps_state.get(step[0], {}).get("status") == "approved"]
     def remember_pr_repo(repo):
         state["pr_repo"] = repo
@@ -773,8 +827,11 @@ def main():
     publish_output(target_repo, copied, feature, [role.LABEL for role in selected_roles],
                    selected_change.name if selected_change else None, approved_labels,
                    pr_repo=state.get("pr_repo"), on_pr_repo=remember_pr_repo)
-    # Ciclo de vida: con todos los pasos aprobados, ofrece pasar el item a Done en el Project
-    finish_item(selected_project, selected_item)
+    if qa_role and (qa_test_result is None or not qa_test_result.passed):
+        ui.error("El item permanece In Progress porque la suite QA no fue ejecutada o no pasó.")
+    else:
+        # Solo se ofrece pasar el item a Done después de que la suite QA haya pasado.
+        finish_item(selected_project, selected_item)
     if presenter_text and any(role.KEY == "presenter" for role in selected_roles):
         print("\nInforme del Presenter (extracto):")
         print(presenter_text[-500:] if len(presenter_text) > 500 else presenter_text)

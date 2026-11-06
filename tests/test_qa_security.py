@@ -67,6 +67,14 @@ class QaSecurityContractTests(unittest.TestCase):
         self.assertIn("NO EJECUTADO", task.expected_output)
         self.assertIn("BVA", task.expected_output)
 
+    def test_execution_report_task_uses_results_without_regenerating_tests(self):
+        task = qa_security.build_execution_report_task(FEATURE, "QA draft", "Estado: failed")
+        self.assertIs(task.agent, qa_security.agent)
+        self.assertIn("QA draft", task.description)
+        self.assertIn("Estado: failed", task.description)
+        self.assertIn("No vuelvas a generar ni modificar archivos de prueba", task.description)
+        self.assertIn("sin regenerar tests", task.expected_output)
+
 
 class QaSecurityContextTests(unittest.TestCase):
     def test_spec_is_found_wherever_it_is_and_cited_with_its_path(self):

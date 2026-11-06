@@ -95,6 +95,8 @@ class SavedSelectionRunTests(unittest.TestCase):
                                              side_effect=lambda item: {**FEATURE, "title": item["title"]}))
             stack.enter_context(patch.object(app, "run_step", side_effect=traced("run", "Informe QA")))
             stack.enter_context(patch.object(app, "hitl_approve", return_value=("s", "")))
+            stack.enter_context(patch.object(app, "confirm_qa_test_execution", return_value=False))
+            stack.enter_context(patch.object(app, "run_qa_tests"))
             stack.enter_context(patch.object(app, "publish_output", side_effect=traced("publish")))
             stack.enter_context(patch.object(app, "start_item", side_effect=traced("start")))
             stack.enter_context(patch.object(app, "finish_item", side_effect=traced("finish")))
@@ -148,9 +150,9 @@ class SavedSelectionRunTests(unittest.TestCase):
     def test_item_lifecycle_runs_around_the_flow_with_the_chosen_item(self):
         trace = []
         self.run_main(self.state_file, self.target, ["2", "2"], [], trace=trace)
-        self.assertEqual([name for name, _ in trace], ["start", "run", "publish", "finish"])
+        self.assertEqual([name for name, _ in trace], ["start", "run", "publish"])
         for name, args in trace:
-            if name in ("start", "finish"):
+            if name == "start":
                 self.assertEqual((args[0]["id"], args[1]["id"]), ("P2", "I2"))  # proyecto y feature elegidos
 
     def test_stale_saved_pieces_are_asked_again(self):
